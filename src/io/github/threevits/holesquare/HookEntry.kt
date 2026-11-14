@@ -46,19 +46,32 @@ class HookEntry : IXposedHookLoadPackage {
 
         if (lpparam.packageName != PKG_SYSTEMUI) return
 
-        // SystemUIApplication 是整个 SystemUI 进程的 Application，
-        // 它的 onCreate 是所有组件起来之前最早能拿到 Context 的时机之一。
-        XposedHelpers.findAndHookMethod(
-            CLS_APP, lpparam.classLoader, "onCreate",
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val app = param.thisObject as? Context ?: return
-                    // 丢到主线程队列尾部，避开 Application.onCreate 还没走完的窗口期
-                    Handler(app.mainLooper).post { install(app) }
-                }
+        // SystemUI 的 Application 类**会改名**。
+        // Android ≤16 是 com.android.systemui.SystemUIApplication，
+        // ColorOS 17 / Android 17 改成了 com.android.systemui.application.impl.SystemUIApplicationImpl。
+        // 写死一个名字的代价就是：系统一升级，findAndHookMethod 直接抛 ClassNotFoundError，
+        // install() 从头到尾没跑过，现场表现为「模块装了、启用了、什么都不发生」——很难查。
+        //
+        // 所以按候选列表找；全都没找到就退到 Application#onCreate ——
+        // 那个方法一定存在（boot class），子类的 onCreate 必然调 super，兜得住。
+        val hook = object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val app = param.thisObject as? Context ?: return
+                // 丢到主线程队列尾部，避开 Application.onCreate 还没走完的窗口期
+                Handler(app.mainLooper).post { install(app) }
             }
-        )
-        XposedBridge.log("[$TAG] 已挂上 $CLS_APP#onCreate")
+        }
+
+        val cls = APP_CLASS_CANDIDATES.firstNotNullOfOrNull { name ->
+            runCatching { XposedHelpers.findClass(name, lpparam.classLoader) }.getOrNull()
+        }
+        if (cls != null) {
+            XposedHelpers.findAndHookMethod(cls, "onCreate", hook)
+            XposedBridge.log("[$TAG] 已挂上 ${cls.name}#onCreate")
+        } else {
+            XposedHelpers.findAndHookMethod(android.app.Application::class.java, "onCreate", hook)
+            XposedBridge.log("[$TAG] 没找到 SystemUI 的 Application 类，退回 Application#onCreate")
+        }
     }
 
     /**
@@ -234,7 +247,18 @@ class HookEntry : IXposedHookLoadPackage {
         const val TAG = Tag.NAME
 
         const val PKG_SYSTEMUI = "com.android.systemui"
-        const val CLS_APP = "com.android.systemui.SystemUIApplication"
+
+        /**
+         * SystemUI 的 Application 类名，**从新到旧**。
+         *
+         * 只增不改：老系统还得靠后面的项，新系统用前面的项先命中。
+         * 都命不中时 handleLoadPackage 会退回 Application#onCreate。
+         */
+        val APP_CLASS_CANDIDATES = listOf(
+            "com.android.systemui.application.impl.SystemUIApplicationImpl", // ColorOS 17 / Android 17
+            "com.android.systemui.application.SystemUIApplication",          // Android 16 过渡期
+            "com.android.systemui.SystemUIApplication",                      // Android ≤15
+        )
 
         /**
          * TYPE_NAVIGATION_BAR_PANEL (2024)。

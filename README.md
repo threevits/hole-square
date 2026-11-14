@@ -12,6 +12,7 @@
 - **ColorOS 系设备**（ColorOS / OxygenOS / RealmeUI）+ LSPosed
   - 需要设备**有挖孔**，并且能读到 `ro.oplus.display.screenhole.positon`（OPPO 系出厂都带这个属性）
   - 实测通过：一加 Ace 3（PJE110）/ ColorOS 16，SystemUI `16.00.12`
+  - 实测通过：一加 15T（PLZ110）/ ColorOS 17（Android 17），SystemUI `17.99.02`
 - **默认值是按 Ace 3 实测填的**（孔径 82px、孔心 (632,78)）。换机型不用改代码 ——
   开机时模块会读那个属性拿到位置，你只要在 app 里按「调到黑边刚好消失」的流程重新量一遍大小
 - **OShin 那类模块无关**：本模块不碰流体云，跟它们不冲突
@@ -268,7 +269,7 @@ python3 -I make-star.py --out my-star.svg
 `alpha` 一律用 smoothstep 而不是线性 —— 线性末端斜率不为零，alpha 撞到 0 会留下一条
 看得出来的终止线。
 
-## 踩过的八个坑
+## 踩过的九个坑
 
 **1. 窗口类型不能是 2038。**
 第一版用 `TYPE_APPLICATION_OVERLAY`(2038)，层序只有 111000，被控制中心盖住、锁屏也看不到。
@@ -368,6 +369,22 @@ ViewRoot 重建那一类竞态。
 教训：**"用户正在输入中的中间态"和"已经定稿的值"必须分开**。
 任何"输入即校验即回写"的控件都有这个坑。
 
+**9. SystemUI 的 Application 类名会跟着系统大版本改名。**
+Android ≤16 是 `com.android.systemui.SystemUIApplication`，ColorOS 17 / Android 17 成了
+`com.android.systemui.application.impl.SystemUIApplicationImpl`。第一版把类名写死在
+`findAndHookMethod` 里，升级后它直接抛 `ClassNotFoundError` **在 `handleLoadPackage` 里** ——
+`install()` 一行都没跑，连「install 失败」那条兜底日志都打不出来。
+
+现场表现是**「模块装着、LSPosed 里启用着、作用域勾着、什么都不发生」**，logcat 一片干净，
+因为 `XposedBridge.log` 根本不写 logcat，得去 `/data/adb/lspd/log/modules_*.log` 找。
+
+修法是候选列表：从新到旧依次 `findClass`，命中哪个挂哪个；全都不中再退回
+`android.app.Application#onCreate` —— 那个类在 boot class 里一定存在，子类的 `onCreate`
+必然调 `super`，等于给自己留了条**不怕改名的后路**。
+
+教训：**跨系统版本 hook 时，任何类名都是"当前已知"而不是"永远成立"的**。
+能用基类兜底就用基类，不能就用列表，别让一次改名把整个模块打成哑巴。
+
 ## 构建
 
 ```bash
@@ -416,7 +433,7 @@ adb shell su -c 'cat $(ls -t /data/adb/lspd/log/modules_*.log | head -1)' | grep
 正常应该看到：
 
 ```
-[挖孔黑方块] 已挂上 com.android.systemui.SystemUIApplication#onCreate
+[挖孔黑方块] 已挂上 com.android.systemui.application.impl.SystemUIApplicationImpl#onCreate
 [挖孔黑方块] 窗口已就位 129x129 @ (567, 14)，属性里的挖孔 72x72 @ (596, 40)，屏幕旋转 0°（竖屏，显示）
 [挖孔黑方块] onDraw #1 五角星 129x129
 [挖孔黑方块] provider 一直没应答，保持默认配置
@@ -441,7 +458,10 @@ adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png
 
 ## 失效了怎么办
 
-- **没有「窗口已就位」** → 加窗被拒或 `SystemUIApplication` 类名变了
+- **没有「窗口已就位」** → 先看有没有「已挂上 …#onCreate」那条。**连它都没有**说明钩子根本没挂上：
+  SystemUI 的 Application 类名又变了（Android 17 就从 `com.android.systemui.SystemUIApplication`
+  改成了 `com.android.systemui.application.impl.SystemUIApplicationImpl`）。1.0.4 起会依次试 3 个
+  候选类名，全都不中再退回 `Application#onCreate`，正常不会再空转；真空了就是加窗被拒
 - **有「窗口已就位」但形状一直是默认的** → provider 没应答，看「形状同步为」那条是第几次尝试
 - **形状切了但画面不变** → 回到坑 2/3，确认窗口是 TRANSLUCENT 且 onDraw 开头有清画布
 
