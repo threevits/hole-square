@@ -7,6 +7,9 @@
 
 装上即用，改形状**立刻生效**，不用重启 SystemUI。
 
+> **遇到问题** → [提 issue](https://github.com/threevits/hole-square/issues)。
+> 请带上**机型 / ColorOS 版本 / SystemUI 版本**，以及模块日志（见文末「验证」一节）。
+
 ## 前提
 
 - **ColorOS 系设备**（ColorOS / OxygenOS / RealmeUI）+ LSPosed
